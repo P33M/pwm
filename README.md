@@ -3,43 +3,23 @@ pwm
 
 Proof-of-concept program (hack) for testing sigma-delta modulated PWM audio output on Raspberry Pi.
 
-
-Description
+pwm_lut
 ===
+Generates a linearisation lookup table for a CMOS "DAC" - like the one found on the Pi's audio output.
 
-This small program, originally derived from PiFM, takes direct control of the PWM peripheral (and an associated DMA channel) to play a precomputed sample sequence. Currently, the program will only play 1 or two sine tones. Support for basic WAV playback is planned.
+The voltage output by a CMOS totem-pole output stage is not a fixed quantity. It is a function of the silicon parameters of each MOSFET (p-MOS and n-MOS), the remenant output voltage on the filter capacitor, the output resistor and the driving voltage.
 
-Configuration
+This program computes an X * Y matrix that takes a quantized version of the output duty cycle and remenant voltage, then provides a corrected value to a resolution of 16 bits.
+
+
+pwm_dma
 ===
+Super hacky kernel module that overrides Videocore's control of the PWM peripheral. Note that VC4 must have first used the peripheral at least once: this is to set up PLL_D and PWMDIV with the correct frequency. The clock supplied to the block is 2048 * 44100Hz.
 
-Several variables can be set before compilation (I have not bothered to do command line parsing yet).
+After insmod, run `mknod -c /dev/pwm_dma 1337 0` to make the device node.
 
-static int oversample_bits = 6;
-static int pwm_bits = 5;
+Writes will be interpreted as LSB-justified 32-bit words, as per the PWM datasheet section on the input fifo. The ring buffer is 64k in size which gives a playback length of 11ms.
 
-oversample_bits + pwm_bits must be <= 11 for a 48k or 44.1k sample rate. Any higher (samplerate or bits) will overclock the PWM peripheral. Oversample_bits causes the PWM carrier to be 2^os_bits * fs.
+Reads are invalid.
 
-static int source_fs = 48000;
-Source sample rate.
-
-
-static int source_freq = 2600;
-Sine tone frequency
-
-static int play_length = 48;
-Number of samples to create
-
-static int resample = 1;
-1 = apply linear resampling, 0 = Zero-order hold.
-
-static int dither = 1;
-static int dither_shift = -1;
-Apply white noise dither to the error integrator signal for sigma-delta. dither_shift is the number of bits shifts relative to LSB, therefore -1 = 0.5LSB amplitude dither added.
-
-float scale = 0.3f;
-Linear scaling factor for source_freq sinewave.
-
-Compilation
-===
-
-gcc -Wall -lm -o pwmhax pwmhax.c
+TODO: fix IOCTLS for messing about with clock frequency and streaming.
