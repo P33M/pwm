@@ -162,13 +162,13 @@ int main (int argc, char **argv) {
 	while (i != -1) {
 		switch(i) {
 		case 'x':
-				dac_params.x = atoi(optarg);
-				break;
+			dac_params.x = atoi(optarg);
+			break;
 		case 'y':
-				dac_params.y = atoi(optarg);
-				break;
+			dac_params.y = atoi(optarg);
+			break;
 		case 0:
-				break;
+			break;
 		case 1:
 			dac_params.an = atof(optarg);
 			break;
@@ -197,7 +197,7 @@ int main (int argc, char **argv) {
 			dac_params.csv_out = 1;
 			break;
 		case '?':
-			printf("option=%s\n", optopt);
+			printf("option=%d\n", optopt);
 			printf(usage);
 			exit(-1);
 			break;
@@ -240,16 +240,11 @@ int main (int argc, char **argv) {
 		for (j = 0; j < dac_params.y; j++) {
 			float vn, vp, vc;
 			vc = dac_params.max_vc * ((float) j / ((float) dac_params.y - 1.0f));
-			if (i != dac_params.x - 1)
-				vn = converge (vc, dac_params.vdac, dac_params.ra, dac_params.an, dac_params.bn, 1);
-			else
-				vn = 0.0f;
-			if (i != 0)
-				vp = converge (vc, dac_params.vdac, dac_params.ra, dac_params.ap, dac_params.bp, 0);
-			else
-				vp = 0.0f;
+			vn = converge (vc, dac_params.vdac, dac_params.ra, dac_params.an, dac_params.bn, 1);
+			vp = converge (vc, dac_params.vdac, dac_params.ra, dac_params.ap, dac_params.bp, 0);
+
 			float d = ((float) i / ((float) dac_params.x - 1.0f));
-			array[i][j] = d * (dac_params.vdac - vp - vn) + (1.0f - d) * vn;
+			array[i][j] = d * (dac_params.vdac - vp) + (1.0f - d) * vn;
 		}
 	}
 	if (dac_params.csv_out) {
