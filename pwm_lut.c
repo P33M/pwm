@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <unistd.h>
+#include <stdint.h>
 #include <getopt.h>
 #include <string.h>
 #include <sys/types.h>
@@ -122,21 +123,24 @@ void write_c (int x, int y, float **array, FILE *fp)
 			" * CMOS DAC duty-cycle linearisation LUT\n"
 			" * Computed with the following parameters:\n"
 			" * PWM range=%d Vc nlevels=%d\n"
-			" * PMOS k'n(Vgs-Vt)=%f -0.5*k'n=%f\n"
-			" * NMOS k'n(Vgs-Vt)=%f -0.5*k'n=%f\n"
+			" * PMOS k'n*(Vgs-Vt)=%f -0.5*k'n=%f\n"
+			" * NMOS k'n*(Vgs-Vt)=%f -0.5*k'n=%f\n"
 			" * Vdac=%f R1=%f R2=%f\n"
 			" **/\n", dac_params.x, dac_params.y,
 			dac_params.ap, dac_params.bp, dac_params.an, dac_params.bn,
 			dac_params.vdac, dac_params.ra, dac_params.rb);
-	fprintf(fp, "static const int32_t dac_lut[%d][%d] = {\n", x, y);
+	fprintf(fp, "const int16_t dac_lut[%d][%d] = {\n", x, y);
 	for (i = 0; i < x; i++) {
 		fprintf(fp, "\t{");
 		for (j = 0; j < y; j++) {
 			/* Convert to duty-referenced */
 			float out_scaled = 4294967294.0f * (array[i][j] / dac_params.vdac);
 			/* 16-bit precision is enough for anybody */
-			unsigned int out_quantised = (((unsigned int) out_scaled) & 0xFFFF0000) + ((((unsigned int) out_scaled) & 0x00008000) << 1);
-			fprintf(fp, " 0x%08x, ", out_quantised);
+			if (i >= 60) {
+				printf("out_scale=%f\n", out_scaled);
+			}
+			uint16_t out_quantised = ((((uint32_t) out_scaled) & 0xFFFF0000) + ((((uint32_t) out_scaled) & 0x00008000) << 1)) >> 16;
+			fprintf(fp, " 0x%04x, ", out_quantised);
 		}
 		fprintf(fp, "},\n");
 	}
@@ -242,7 +246,7 @@ int main (int argc, char **argv) {
 			vc = dac_params.max_vc * ((float) j / ((float) dac_params.y - 1.0f));
 			vn = converge (vc, dac_params.vdac, dac_params.ra, dac_params.an, dac_params.bn, 1);
 			vp = converge (vc, dac_params.vdac, dac_params.ra, dac_params.ap, dac_params.bp, 0);
-
+			printf ("vn=%f vp=%f i=%d j=%d\n", vn, vp, i, j);
 			float d = ((float) i / ((float) dac_params.x - 1.0f));
 			array[i][j] = d * (dac_params.vdac - vp) + (1.0f - d) * vn;
 		}
