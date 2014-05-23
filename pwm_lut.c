@@ -129,6 +129,7 @@ void write_c (int x, int y, float **array, FILE *fp)
 			" **/\n", dac_params.x, dac_params.y,
 			dac_params.ap, dac_params.bp, dac_params.an, dac_params.bn,
 			dac_params.vdac, dac_params.ra, dac_params.rb);
+	fprintf(fp, "#define LUT_V0_SIZE_POW2 %d \n #define LUT_VC_SIZE_POW2 %d\n", (unsigned int) log2(x), (unsigned int) log2(y));
 	fprintf(fp, "const int16_t dac_lut[%d][%d] = {\n", x, y);
 	for (i = 0; i < x; i++) {
 		fprintf(fp, "\t{");
