@@ -21,6 +21,7 @@
 #include <sndfile.h>
 
 #include "lut_modelb.h"
+#include "6point0.h"
 
 const char usage[] = {
 		"pwm_gen: Generate sigma-delta modulated n-bit samples\n"
@@ -129,26 +130,6 @@ uint16_t get_vo(uint16_t duty, uint16_t vc)
 static int count;
 
 
-uint32_t sdm_a_sample_properly(int32_t *sample)
-{
-	uint16_t y;
-	float vc_iir;
-
-	count++;
-	/* Check range and round */
-	*sample += (1 << 31);
-	y = (*sample >> 16) + ((*sample & 0x00008000) >> 15);
-
-
-	/* Add error */
-	sdm_state.integrate2 += sdm_state.integrate1;
-	sdm_state.integrate1 += y;
-
-
-
-	return y >> (16 - gen_params.nbits);
-}
-
 uint32_t sdm_a_sample(int32_t *sample)
 {
 	uint16_t y;
@@ -233,6 +214,36 @@ void oversample (int *input, int32_t *output, int src_length, int nr_channels)
 	}
 }
 
+
+static float last_sample[FILTER_LEN];
+
+void oversample_and_fir (int *input, int32_t *output, int src_length, int nr_channels)
+{
+	int i, j, k;
+	float accumulator = 0.0f;
+	int sample;
+
+	for (i = 0; i < src_length; i+= nr_channels) {
+		for (j = 0; j < gen_params.osr; j++) {
+			if(j == 0)
+				sample = input[i];
+			else
+				sample = 0;
+			/* Compute FIR output sample given input */
+			last_sample[(i * gen_params.osr + j) % FILTER_LEN] = (float) sample / 2147483647.0f;
+			for (k = 0; k < FILTER_LEN; k++) {
+				int in_ptr = ((i * gen_params.osr + j - k) % FILTER_LEN);
+				if (in_ptr >= 0) {
+					accumulator += last_sample[in_ptr] * ((float) coefs[k] / 32767.0f);
+				} else {
+					accumulator += 0.0f;
+				}
+			}
+			output[i * gen_params.osr + j] = (int32_t) accumulator;
+		}
+	}
+}
+
 /**
  * Scaryfunc
  */
@@ -240,8 +251,8 @@ void interpolate_filter (int32_t *input, int input_length, int osr)
 {
 	/* Fudge linear for now (sinc^2) */
 	int i, j = 0;
+	int32_t incr_val;
 	int32_t sample1, sample2;
-	int incr_val;
 	/* Every OSRth sample is a real sample. */
 	for (i = 0; i < input_length; i+=osr) {
 		sample1 = input[i];
@@ -317,13 +328,14 @@ int main (int argc, char **argv)
 		read = sf_readf_int(infile, input_buf, INPUT_CHUNK_SIZE * snd_info.channels);
 		output_buf_len = (read / snd_info.channels) * gen_params.osr;
 		/* oversample into output buffer - note, discards all channel info */
-		oversample(input_buf, output_buf, read, snd_info.channels);
+		//oversample(input_buf, output_buf, read, snd_info.channels);
 		/* FIR filter */
-		interpolate_filter(output_buf, output_buf_len, gen_params.osr);
+		//interpolate_filter(output_buf, output_buf_len, gen_params.osr);
+		oversample_and_fir(input_buf, output_buf, read, snd_info.channels);
 		/* SDM + quantise */
-		for (i = 0; i < output_buf_len; i++) {
-			output_buf[i] = sdm_a_sample(&output_buf[i]);
-		}
+		//for (i = 0; i < output_buf_len; i++) {
+		//	output_buf[i] = sdm_a_sample(&output_buf[i]);
+		//}
 		/* Pack - we only need 6 bits of resolution so we can store that in 8. */
 		//pack_in_place(output_buf, output_buf_len);
 		//out_buf_packed = (unsigned char *) output_buf;

@@ -25,14 +25,8 @@
  *   Overflow Mode   : saturate
  */
 
-/* General type conversion for MATLAB generated C-code  */
-#include "tmwtypes.h"
-/* 
- * Expected path to tmwtypes.h 
- * C:\Program Files\MATLAB\R2007b\extern\include\tmwtypes.h 
- */
-const int BL = 191;
-const int16_T B[191] = {
+#define FILTER_LEN 192
+const int16_t coefs[192] = {
        56,    111,    165,    219,    270,    320,    367,    412,    453,
       491,    525,    555,    580,    600,    616,    626,    630,    629,
       622,    609,    590,    565,    534,    496,    453,    404,    350,
@@ -54,5 +48,5 @@ const int16_T B[191] = {
       224,    289,    350,    404,    453,    496,    534,    565,    590,
       609,    622,    629,    630,    626,    616,    600,    580,    555,
       525,    491,    453,    412,    367,    320,    270,    219,    165,
-      111,     56
+      111,     56,    0,
 };
