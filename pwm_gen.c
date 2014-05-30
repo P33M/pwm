@@ -74,8 +74,8 @@ uint16_t a1 = 25173;
 uint16_t c1 = 13849;
 
 uint16_t lcg2_state = 0xDEAD;
-uint16_t a2 = 0;
-uint16_t c2 = 3 * 7 * 13;
+uint16_t a2 = 25173;
+uint16_t c2 = 13849;
 
 
 /**
@@ -97,8 +97,8 @@ int16_t quantise(uint16_t *val, int nbits)
 void dither1(uint16_t *val, int nbits)
 {
 	lcg1_state = (lcg1_state * a1 + c1) % (1 << 16);
-	*val += ((int16_t) lcg2_state) >> (nbits);
-	//printf("dither = 0x%04x\n", ((int16_t) lcg1_state) >> (nbits));
+	*val += ((int16_t) lcg1_state) >> (nbits);
+	//printf("dither = %d\n", ((int16_t) lcg1_state) >> (nbits));
 }
 
 /* CLCG TPDF dither */
@@ -107,7 +107,7 @@ void dither2(uint16_t *val, int nbits)
 	lcg2_state = (lcg2_state * a2 + c2) % (1 << 16);
 	lcg1_state = (lcg1_state * a1 + c1) % (1 << 16);
 	/* Dither the LSB of the 16-bit value by both LCGs - gives TPDF */
-	*val += lcg1_state >> (nbits + 1);
+	*val += ((int16_t) lcg1_state) >> (nbits + 1);
 	*val += ((int16_t) lcg2_state) >> (nbits + 1);
 }
 
@@ -118,7 +118,6 @@ void dither2(uint16_t *val, int nbits)
  */
 uint16_t get_vo(uint16_t duty, uint16_t vc)
 {
-	printf("lut[%d][%d]\n", duty >> (16 - LUT_V0_SIZE_POW2), vc >> (16 - LUT_VC_SIZE_POW2));
 	return dac_lut[duty >> (16-LUT_V0_SIZE_POW2)][vc >> (16 - LUT_VC_SIZE_POW2)];
 }
 
@@ -134,16 +133,15 @@ uint32_t sdm_a_sample(int32_t *sample)
 {
 	uint16_t y;
 	*sample += (1<<31);
+
 	y = (*sample >> 16) + ((*sample & 0x00008000) >> 15);
-	//printf("sample = 0x%08x y = 0x%04x n=%d\n", *sample, y, count);
-	count++;
 	y += 2 * sdm_state.integrate1;
 	y -= sdm_state.integrate2;
-	//printf("integrate1 = %05d integrate2 = %05d y=0x%04x\n", sdm_state.integrate1, sdm_state.integrate2, y);
-	/* truncate and round */
-	dither1(&y, gen_params.nbits);
-	//sdm_state.integrate2 = sdm_state.integrate1;
-	//printf("integrate1 = %05d integrate2 = %05d y=0x%04x\n", sdm_state.integrate1, sdm_state.integrate2, y);
+
+	if (gen_params.dither == 1)
+		dither1(&y, gen_params.nbits);
+	else if (gen_params.dither == 2)
+		dither2(&y, gen_params.nbits);
 
 	/* store last_vo */
 	if (gen_params.use_estimator) {
@@ -152,14 +150,9 @@ uint32_t sdm_a_sample(int32_t *sample)
 		int16_t error = y;
 		quantise(&y, gen_params.nbits);
 		vo = get_vo(y, sdm_state.vc_estimate);
-		//printf("y = 0x%04x vc_estimate = 0x%04x vo = 0x%04x ", y, sdm_state.vc_estimate, vo);
 		val = (gen_params.alpha * (float) vo) + ((1.0f - gen_params.alpha) * (float) sdm_state.vc_estimate);
-		//printf("val = %f\n", val );
 		sdm_state.vc_estimate = (uint16_t) val;
 		error =  error - vo;
-		//printf("vc_estimate = 0x%04x\n", sdm_state.vc_estimate);
-		//sdm_state.vc_estimate = gen_params.alpha * sdm_state.last_vo - (1 - gen_params.alpha) * sdm_state.vc_estimate;
-		//sdm_state.integrate1 = quantise(&y, gen_params.nbits);
 		sdm_state.integrate2 = sdm_state.integrate1;
 		sdm_state.integrate1 = error;
 	} else {
@@ -231,6 +224,7 @@ void oversample_and_fir (int *input, int32_t *output, int src_length, int nr_cha
 				sample = 0;
 			/* Compute FIR output sample given input */
 			last_sample[(i * gen_params.osr + j) % FILTER_LEN] = (float) sample / 2147483647.0f;
+			accumulator = 0.0f;
 			for (k = 0; k < FILTER_LEN; k++) {
 				int in_ptr = ((i * gen_params.osr + j - k) % FILTER_LEN);
 				if (in_ptr >= 0) {
@@ -239,7 +233,8 @@ void oversample_and_fir (int *input, int32_t *output, int src_length, int nr_cha
 					accumulator += 0.0f;
 				}
 			}
-			output[i * gen_params.osr + j] = (int32_t) accumulator;
+			output[i * gen_params.osr + j] = (int32_t) (accumulator * 2147483647.0f);
+			//printf("%f, %d\n", accumulator, output[i * gen_params.osr + j]);
 		}
 	}
 }
@@ -288,6 +283,7 @@ int main (int argc, char **argv)
 	gen_params.nbits = 6;
 	gen_params.order = 2;
 	gen_params.osr = 32;
+	gen_params.dither = 2;
 	gen_params.filtermode = "matlab5";
 	gen_params.use_estimator = 1;
 	gen_params.alpha = 0.0737f;
@@ -333,9 +329,10 @@ int main (int argc, char **argv)
 		//interpolate_filter(output_buf, output_buf_len, gen_params.osr);
 		oversample_and_fir(input_buf, output_buf, read, snd_info.channels);
 		/* SDM + quantise */
-		//for (i = 0; i < output_buf_len; i++) {
-		//	output_buf[i] = sdm_a_sample(&output_buf[i]);
-		//}
+		for (i = 0; i < output_buf_len; i++) {
+			output_buf[i] = sdm_a_sample(&output_buf[i]);
+			//printf("%d\n", output_buf[i]);
+		}
 		/* Pack - we only need 6 bits of resolution so we can store that in 8. */
 		//pack_in_place(output_buf, output_buf_len);
 		//out_buf_packed = (unsigned char *) output_buf;

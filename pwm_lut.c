@@ -44,6 +44,7 @@ static const struct option longopts[] = {
 	{ "vdac", required_argument, 0, 7 },
 	{ "file", required_argument, 0, 8 },
 	{ "csv", no_argument, 0, 9 },
+	{ "fudge", required_argument, 0, 10 },
 	{ 0, 0, 0, 0 },
 };
 
@@ -56,6 +57,7 @@ struct dac_params {
 	float rb;
 	float vdac;
 	float max_vc;
+	float fudge;
 	int x;
 	int y;
 	int csv_out;
@@ -129,7 +131,7 @@ void write_c (int x, int y, float **array, FILE *fp)
 			" **/\n", dac_params.x, dac_params.y,
 			dac_params.ap, dac_params.bp, dac_params.an, dac_params.bn,
 			dac_params.vdac, dac_params.ra, dac_params.rb);
-	fprintf(fp, "#define LUT_V0_SIZE_POW2 %d \n #define LUT_VC_SIZE_POW2 %d\n", (unsigned int) log2(x), (unsigned int) log2(y));
+	fprintf(fp, "#define LUT_V0_SIZE_POW2 %d\n#define LUT_VC_SIZE_POW2 %d\n", (unsigned int) log2(x), (unsigned int) log2(y));
 	fprintf(fp, "const int16_t dac_lut[%d][%d] = {\n", x, y);
 	for (i = 0; i < x; i++) {
 		fprintf(fp, "\t{");
@@ -137,9 +139,6 @@ void write_c (int x, int y, float **array, FILE *fp)
 			/* Convert to duty-referenced */
 			float out_scaled = 4294967294.0f * (array[i][j] / dac_params.vdac);
 			/* 16-bit precision is enough for anybody */
-			if (i >= 60) {
-				printf("out_scale=%f\n", out_scaled);
-			}
 			uint16_t out_quantised = ((((uint32_t) out_scaled) & 0xFFFF0000) + ((((uint32_t) out_scaled) & 0x00008000) << 1)) >> 16;
 			fprintf(fp, " 0x%04x, ", out_quantised);
 		}
@@ -201,6 +200,9 @@ int main (int argc, char **argv) {
 		case 9:
 			dac_params.csv_out = 1;
 			break;
+		case 10:
+			dac_params.fudge = atof(optarg);
+			break;
 		case '?':
 			printf("option=%d\n", optopt);
 			printf(usage);
@@ -247,9 +249,10 @@ int main (int argc, char **argv) {
 			vc = dac_params.max_vc * ((float) j / ((float) dac_params.y - 1.0f));
 			vn = converge (vc, dac_params.vdac, dac_params.ra, dac_params.an, dac_params.bn, 1);
 			vp = converge (vc, dac_params.vdac, dac_params.ra, dac_params.ap, dac_params.bp, 0);
-			printf ("vn=%f vp=%f i=%d j=%d\n", vn, vp, i, j);
-			float d = ((float) i / ((float) dac_params.x - 1.0f));
-			array[i][j] = d * (dac_params.vdac - vp) + (1.0f - d) * vn;
+			//printf ("vn=%f vp=%f i=%d j=%d\n", vn, vp, i, j);
+			float d = ((float) i / ((float) dac_params.x - 1.0f)) - dac_params.fudge;
+			array[i][j] = d * (dac_params.vdac - vp) + (1.0f - d) * vn + (dac_params.fudge * (vn + vp) / 2.0f);
+			//array[i][j] += array[i][j] * dac_params.fudge
 		}
 	}
 	if (dac_params.csv_out) {
