@@ -285,7 +285,7 @@ int main (int argc, char **argv)
 	gen_params.osr = 32;
 	gen_params.dither = 2;
 	gen_params.filtermode = "matlab5";
-	gen_params.use_estimator = 1;
+	gen_params.use_estimator = 0;
 	gen_params.alpha = 0.0737f;
 	gen_params.inputfile = "in.wav";
 

@@ -21,6 +21,7 @@
 #include <mach/platform.h>
 #include <mach/dma.h>
 #include <linux/uaccess.h>
+#include <asm-generic/ioctl.h>
 
 MODULE_LICENSE("GPL");
 
@@ -37,7 +38,7 @@ struct pwm_dma_state {
 	/* Single-user */
 	bool open;
 	wait_queue_head_t writeq;
-	wait_queue_head_t readq;
+//	wait_queue_head_t readq;
 	void __iomem *dma_chan_base;
 	void __iomem *pwm_base;
 	int dma_chan_irq;
@@ -66,6 +67,8 @@ struct pwm_dma_state {
 
 struct pwm_dma_state *state;
 
+DEFINE_MUTEX(pwm_dma_mutex);
+
 /**
   * Ringbuffer.
   * Simple implementation: four SCBs, each describing a 4k transfer length.
@@ -76,31 +79,119 @@ struct pwm_dma_state *state;
   */
 
 /* IOCTL: enable/disable ringbuffer streaming */
+enum {
+	/* Ringbuffer mode streaming - for continuous streams */
+	PWM_DMA_IOCTL_STREAMON = _IO('S', 0x01),
+	PWM_DMA_IOCTL_STREAMOFF = _IO('S', 0x02),
+	/* Use value in DAT register */
+	PWM_DMA_IOCTL_USE_DAT = _IO('S', 0x03),
 
+	/* Do not use the following IOCTLs without first stopping streaming. Output glitches may result. */
+	/* Output generation mode select */
+	PWM_DMA_IOCTL_MS_MODE = _IO('S', 0x10),
+	PWM_DMA_IOCTL_PDM_MODE = _IO('S', 0x11),
+	PWM_DMA_IOCTL_SERIAL_MODE = _IO('S', 0x12),
+
+	/* Note: divider is frequency divide from PLL output channel. */
+	PWM_DMA_IOCTL_DIVIDER = _IOWR('S', 0x20, u32),
+	/* For MS/PDM modes - set the range and DAT value */
+	PWM_DMA_IOCTL_RANGE = _IOWR('S', 0x21, u32),
+	PWM_DMA_IOCTL_DUTY = _IOWR('S', 0x22, u32),
+};
 static dev_t devid = MKDEV(1337, 0);
+
+static long pwm_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	u32 reg = 0;
+	u32 val = 0;
+	void __user *argp = (void __user *) arg;
+	mutex_lock(&pwm_dma_mutex);
+
+	switch (cmd) {
+	case PWM_DMA_IOCTL_STREAMON:
+		break;
+	case PWM_DMA_IOCTL_STREAMOFF:
+		state->dma_flags = DMA_STOPPING;
+		bcm_dma_abort(state->dma_chan_base);
+		/* reset ringbuffer state to the start - and abort the current DMA */
+		state->circ_writeptr = state->circ_buffer;
+		state->circ_readptr = state->circ_buffer;
+		break;
+	case PWM_DMA_IOCTL_USE_DAT:
+		if (state->dma_flags != DMA_STOPPED)
+			pr_warn("pwm_dma: Warning: switching serialiser mode without stopping streaming\n");
+		reg = readl(state->pwm_base + CTL);
+		reg &= ~(1 << 5);
+		writel(reg, state->pwm_base + CTL);
+		break;
+	case PWM_DMA_IOCTL_MS_MODE:
+		reg = readl(state->pwm_base + CTL);
+		reg |= (1 << 7);
+		reg &= ~(1 << 1);
+		writel(reg, state->pwm_base + CTL);
+		break;
+	case PWM_DMA_IOCTL_PDM_MODE:
+		reg = readl(state->pwm_base + CTL);
+		reg &= ~(1 << 7);
+		reg &= ~(1 << 1);
+		writel(reg, state->pwm_base + CTL);
+		break;
+	case PWM_DMA_IOCTL_SERIAL_MODE:
+		reg = readl(state->pwm_base + CTL);
+		reg |= (1 << 1);
+		writel(reg, state->pwm_base + CTL);
+		break;
+	case PWM_DMA_IOCTL_DIVIDER:
+		break;
+	case PWM_DMA_IOCTL_RANGE:
+		if (state->dma_flags != DMA_STOPPED)
+			pr_warn("pwm_dma: Warning: switching serialiser mode without stopping streaming\n");
+		/* Disable channel, change range, re-enable channel */
+		if (copy_from_user(&val, argp, sizeof(u32)))
+			return -EFAULT;
+		reg = readl(state->pwm_base + CTL);
+		reg &= ~(1 << 0);
+		writel(reg, state->pwm_base + CTL);
+		writel(val, state->pwm_base + RNG1);
+		reg |= (1 << 0);
+		writel(val, state->pwm_base + CTL);
+		break;
+	case PWM_DMA_IOCTL_DUTY:
+		if (copy_from_user(&val, argp, sizeof(u32)))
+			return -EFAULT;
+		writel(val, state->pwm_base + DAT1);
+		break;
+	default:
+		mutex_unlock(&pwm_dma_mutex);
+		return -EINVAL;
+		break;
+	}
+	mutex_unlock(&pwm_dma_mutex);
+	return 0;
+}
+
 
 static int space_available(void)
 {
 	/* Circular buffer. */
-	return (state->circ_writeptr != state->circ_readptr);
-}
-
-static long pwm_dma_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
-{
-	switch (cmd) {
-		
-	}
-	return 0;
+	unsigned long flags;
+	int ret = 0;
+	local_irq_save(flags);
+	ret = (state->circ_writeptr != state->circ_readptr);
+	local_irq_restore(flags);
+	return ret;
 }
 
 static int pwm_dma_release(struct inode *inode, struct file *file)
 {
 	state->open = false;
+	mutex_unlock(&pwm_dma_mutex);
 	return 0;
 }
 
 static int pwm_dma_open(struct inode *inode, struct file *file)
 {
+	mutex_lock(&pwm_dma_mutex);
 	return 0;
 }
 
@@ -150,6 +241,7 @@ static void prep_scbs(struct pwm_dma_state *state)
 	for (i = 0; i < nr_scbs; i++) {
 		state->scbs[i].info = info;
 		state->scbs[i].src = state->circ_dma_base + (i * scb_len);
+		/* PWM block FIFO (phys address) */
 		state->scbs[i].dst = 0x7E20C018;
 		state->scbs[i].length = scb_len;
 		state->scbs[i].stride = 0;
@@ -169,8 +261,9 @@ static irqreturn_t pwm_dma_irq(int irq, void *dev_id)
 		break;
 	case DMA_STOPPING:
 		/* Mask IRQ, pause DMA */
+		pr_info("pwm_dma: DMA_STOPPING\n");
 		writel(readl(state->dma_chan_base + BCM2708_DMA_CS) & ~((1 << 0)| (1<<1)), state->dma_chan_base + BCM2708_DMA_CS);
-		disable_irq(state->dma_chan_irq);
+		//disable_irq(state->dma_chan_irq);
 		state->dma_flags = DMA_STOPPED;
 		break;
 	case DMA_STOPPED:
@@ -193,6 +286,7 @@ struct file_operations pwm_dma_fops = {
 	.unlocked_ioctl = pwm_dma_ioctl,
 	.open = pwm_dma_open,
 	.release = pwm_dma_release,
+	.unlocked_ioctl = pwm_dma_ioctl,
 };
 
 static int __init pwm_dma_init(void)
