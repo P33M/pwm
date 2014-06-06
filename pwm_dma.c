@@ -177,6 +177,7 @@ static int space_available(void)
 	unsigned long flags;
 	int ret = 0;
 	local_irq_save(flags);
+	/* Space if at least 1 block is available */
 	ret = (state->circ_writeptr != state->circ_readptr);
 	local_irq_restore(flags);
 	return ret;
@@ -225,7 +226,7 @@ ssize_t pwm_dma_write(struct file *filp, const char __user *buf, size_t count, l
 	if (state->circ_writeptr >= state->circ_buffer_end) {
 		state->circ_writeptr = state->circ_buffer;
 	}
-	pr_info("Write count=%d readptr=%08x writeptr=%08x\n", count, state->circ_readptr, state->circ_writeptr);
+	//pr_info("Write count=%d readptr=%08x writeptr=%08x\n", count, state->circ_readptr, state->circ_writeptr);
 	state->open = false;
 	return count;
 }

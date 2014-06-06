@@ -62,21 +62,28 @@ struct sdm_state {
 	uint16_t last_vo;
 } sdm_state;
 
-void reset_sdm_state (void)
-{
-	sdm_state.integrate1 = 0;
-	sdm_state.integrate2 = 0;
-	sdm_state.vc_estimate = 0;
-}
 
+/* Prime factors of 2^16-1 = 3 5 17 257 */
 uint16_t lcg1_state = 0xBEEF;
+/* prime factors a-1 = 2 2 7 29 31 */
 uint16_t a1 = 25173;
-uint16_t c1 = 13849;
+/* prime factors of c = 11 1259 */
+uint16_t c1 = 13847;
 
-uint16_t lcg2_state = 0xDEAD;
-uint16_t a2 = 25173;
-uint16_t c2 = 13849;
+/* Prime factors of 2^15-1 = 7 31 151 */
+uint16_t lcg2_state = 0x700D;
+/* prime factors of a-1 = 2 2 61 101 */
+uint16_t a2 = 24645;
+/* prime factors of c = 13 131 */
+uint16_t c2 = 1703;
 
+/* LCG1 + LCG2 gives a CLGC length of 2^31 */
+
+uint32_t lcg3_state = 0xDEADBEEF;
+uint32_t a3 = 214013;
+uint32_t c3 = 2531011;
+
+uint32_t lcg4_state = 0xD00DFEED;
 
 /**
  * Returns the most-significant n bits of val. Rounds to nearest.
@@ -96,7 +103,7 @@ int16_t quantise(uint16_t *val, int nbits)
 /* Single-LCG RPDF dither */
 void dither1(uint16_t *val, int nbits)
 {
-	lcg1_state = (lcg1_state * a1 + c1) % (1 << 16);
+	lcg1_state = (lcg1_state * a1 + c1) & 0xFFFFFFFF;
 	*val += ((int16_t) lcg1_state) >> (nbits);
 	//printf("dither = %d\n", ((int16_t) lcg1_state) >> (nbits));
 }
@@ -104,13 +111,25 @@ void dither1(uint16_t *val, int nbits)
 /* CLCG TPDF dither */
 void dither2(uint16_t *val, int nbits)
 {
-	lcg2_state = (lcg2_state * a2 + c2) % (1 << 16);
-	lcg1_state = (lcg1_state * a1 + c1) % (1 << 16);
+	lcg1_state = (lcg1_state * a1 + c1) & 0xFFFF;
+	lcg2_state = (lcg2_state * a2 + c2) & 0x7FFF;
 	/* Dither the LSB of the 16-bit value by both LCGs - gives TPDF */
-	*val += ((int16_t) lcg1_state) >> (nbits + 1);
-	*val += ((int16_t) lcg2_state) >> (nbits + 1);
+	//printf("LCG2 = %u\n", lcg2_state);
+	*val += ((int16_t) lcg1_state) >> (nbits);
+	*val += ((int16_t) lcg2_state) >> (nbits - 1);
 }
 
+void dither3(uint16_t *val, int nbits)
+{
+	lcg3_state = (lcg3_state * a3 + c3) & 0xFFFFFFFF;
+	lcg4_state = (lcg4_state * a3 + c3) & 0xFFFFFFFF;
+	/* Dither the LSB of the 16-bit value by both LCGs - gives TPDF */
+	//printf("LCG2 = %u\n", lcg2_state);
+	/* 0.5LSB */
+	*val += ((int32_t) lcg3_state) >> (nbits + 2 + 16);
+	*val += ((int32_t) lcg4_state) >> (nbits + 2 + 16);
+	printf("%d\n", (((int32_t) lcg3_state) >> (nbits + 18)) + (((int32_t) lcg4_state) >> (nbits + 18)));
+}
 /**
  * Get the computed Vo value from the DAC LUT using duty cycle and the Vc estimate
  * Caution: Vc is the output of an IIR. It needs to be quantised to the number of
@@ -125,16 +144,13 @@ uint16_t get_vo(uint16_t duty, uint16_t vc)
  * Not a brain fart: this emulates the VC4 word length (16bit) used for vmul operations.
  * The returned 16bit sample is shifted to be MSB-justified in 32-bit space.
  */
-
-static int count;
-
-
 uint32_t sdm_a_sample(int32_t *sample)
 {
 	uint16_t y;
 	*sample += (1<<31);
 
-	y = (*sample >> 16) + ((*sample & 0x00008000) >> 15);
+	//y = (*sample >> 16) + ((*sample & 0x00008000) >> 15);
+	y = (*sample >> 16);
 	y += 2 * sdm_state.integrate1;
 	y -= sdm_state.integrate2;
 
@@ -142,6 +158,8 @@ uint32_t sdm_a_sample(int32_t *sample)
 		dither1(&y, gen_params.nbits);
 	else if (gen_params.dither == 2)
 		dither2(&y, gen_params.nbits);
+	else if (gen_params.dither == 3)
+		dither3(&y, gen_params.nbits);
 
 	/* store last_vo */
 	if (gen_params.use_estimator) {
@@ -208,14 +226,18 @@ void oversample (int *input, int32_t *output, int src_length, int nr_channels)
 }
 
 
-static float last_sample[FILTER_LEN];
+float last_sample_saved[FILTER_LEN];
 
 void oversample_and_fir (int *input, int32_t *output, int src_length, int nr_channels)
 {
 	int i, j, k;
 	float accumulator = 0.0f;
 	int sample;
+	float last_sample[FILTER_LEN];
 
+	for (i = 0; i < FILTER_LEN; i++) {
+		last_sample[i] = last_sample_saved[i];
+	}
 	for (i = 0; i < src_length; i+= nr_channels) {
 		for (j = 0; j < gen_params.osr; j++) {
 			if(j == 0)
@@ -230,12 +252,26 @@ void oversample_and_fir (int *input, int32_t *output, int src_length, int nr_cha
 				if (in_ptr >= 0) {
 					accumulator += last_sample[in_ptr] * ((float) coefs[k] / 32767.0f);
 				} else {
-					accumulator += 0.0f;
+					accumulator += last_sample[in_ptr + FILTER_LEN] * ((float) coefs[k] / 32767.0f);
 				}
 			}
 			output[i * gen_params.osr + j] = (int32_t) (accumulator * 2147483647.0f);
 			//printf("%f, %d\n", accumulator, output[i * gen_params.osr + j]);
 		}
+	}
+	for (i = 0; i < FILTER_LEN; i++) {
+		last_sample_saved[i] = last_sample[i];
+	}
+}
+
+void reset_sdm_state (void)
+{
+	int i;
+	sdm_state.integrate1 = 0;
+	sdm_state.integrate2 = 0;
+	sdm_state.vc_estimate = 0;
+	for (i = 0; i < FILTER_LEN; i++) {
+		last_sample_saved[i] = 0.0f;
 	}
 }
 
@@ -256,7 +292,7 @@ void interpolate_filter (int32_t *input, int input_length, int osr)
 		for (j = 1; j < osr; j ++) {
 			//if (i == 0)
 			//	continue;
-			//input[i + j] = sample1 + incr_val;
+			input[i + j] = sample1 + incr_val;
 			input[i + j] = sample1;
 			//sample1 += incr_val;
 		}
@@ -278,12 +314,12 @@ int main (int argc, char **argv)
 
 	int *input_buf = NULL;
 	int32_t *output_buf = NULL;
-	unsigned char *out_buf_packed = NULL;
+	//unsigned char *out_buf_packed = NULL;
 	/* Defaults */
 	gen_params.nbits = 6;
 	gen_params.order = 2;
 	gen_params.osr = 32;
-	gen_params.dither = 2;
+	gen_params.dither = 3;
 	gen_params.filtermode = "matlab5";
 	gen_params.use_estimator = 0;
 	gen_params.alpha = 0.0737f;
@@ -323,6 +359,7 @@ int main (int argc, char **argv)
 	do {
 		read = sf_readf_int(infile, input_buf, INPUT_CHUNK_SIZE * snd_info.channels);
 		output_buf_len = (read / snd_info.channels) * gen_params.osr;
+		//printf("read %d samples\n", read);
 		/* oversample into output buffer - note, discards all channel info */
 		//oversample(input_buf, output_buf, read, snd_info.channels);
 		/* FIR filter */
