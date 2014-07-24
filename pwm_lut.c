@@ -107,18 +107,7 @@ float ** make_array (int x, int y)
 	return ret;
 }
 
-/* Linear scaling factor for array */
-float * make_fudge (int y, float fudge)
-{
-	int i = 0;
-	float incr_val;
-	float *ret = malloc(y * sizeof(float));
-	if (!ret)
-		return NULL;
-	for (i = 0; i < y; i++) {
 
-	}
-}
 
 void write_csv (int x, int y, float **array, FILE *fp)
 {
@@ -264,7 +253,7 @@ int main (int argc, char **argv) {
 			vp = converge (vc, dac_params.vdac, dac_params.ra, dac_params.ap, dac_params.bp, 0);
 			//printf ("vn=%f vp=%f i=%d j=%d\n", vn, vp, i, j);
 			float d = ((float) i / ((float) dac_params.x - 1.0f));
-			array[i][j] = (d * (dac_params.vdac - vp) + (1.0f - d) * vn) * fudge[j];
+			array[i][j] = (d * (dac_params.vdac - vp) + (1.0f - d) * vn) + dac_params.fudge;
 			//array[i][j] += array[i][j] * dac_params.fudge
 		}
 	}

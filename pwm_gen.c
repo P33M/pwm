@@ -52,6 +52,7 @@ struct gen_params {
 	int osr;
 	char *filtermode;
 	float alpha;
+	float fudge;
 } gen_params;
 
 struct sdm_state {
@@ -128,7 +129,38 @@ void dither3(uint16_t *val, int nbits)
 	/* 0.5LSB */
 	*val += ((int32_t) lcg3_state) >> (nbits + 2 + 16);
 	*val += ((int32_t) lcg4_state) >> (nbits + 2 + 16);
-	printf("%d\n", (((int32_t) lcg3_state) >> (nbits + 18)) + (((int32_t) lcg4_state) >> (nbits + 18)));
+	//printf("%d\n", (((int32_t) lcg3_state) >> (nbits + 18)) + (((int32_t) lcg4_state) >> (nbits + 18)));
+}
+
+uint32_t lcg5_hi;
+uint32_t lcg5_lo;
+uint32_t lcg5_state1 = 0xDEADBEEF;
+uint32_t lcg5_state2 = 0xD00DFEED;
+
+void dither4(uint16_t *val, int nbits)
+{
+	lcg5_lo = 16807 * (lcg5_state1 & 0xFFFF);
+	lcg5_hi = 16807 * (lcg5_state1 >> 16);
+
+	lcg5_lo += (lcg5_hi & 0x7FFF) << 16;
+	lcg5_lo += lcg5_hi >> 15;
+
+	if (lcg5_lo & 0x80000000)
+		lcg5_lo -= 0x7FFFFFFF;
+	lcg5_state1 = lcg5_lo;
+
+	lcg5_lo = 16807 * (lcg5_state2 & 0xFFFF);
+	lcg5_hi = 16807 * (lcg5_state2 >> 16);
+
+	lcg5_lo += (lcg5_hi & 0x7FFF) << 16;
+	lcg5_lo += lcg5_hi >> 15;
+
+	if (lcg5_lo & 0x80000000)
+		lcg5_lo -= 0x7FFFFFFF;
+	lcg5_state2 = lcg5_lo;
+	//printf("lcg5_1 = %08d lcg5_2 = %08d\n", lcg5_state1, lcg5_state2);
+	*val += ((int32_t) lcg5_state1) >> (nbits + 2 + 16);
+	*val += ((int32_t) lcg5_state2) >> (nbits + 2 + 16);
 }
 /**
  * Get the computed Vo value from the DAC LUT using duty cycle and the Vc estimate
@@ -140,6 +172,29 @@ uint16_t get_vo(uint16_t duty, uint16_t vc)
 	return dac_lut[duty >> (16-LUT_V0_SIZE_POW2)][vc >> (16 - LUT_VC_SIZE_POW2)];
 }
 
+float vc_lut[64];
+
+/* y = mx+c fit */
+void init_vc()
+{
+	int i = 0;
+	float incr;
+	incr = (gen_params.alpha * gen_params.fudge) / 64.0f;
+	for (i = 0; i < 64; i++) {
+		vc_lut[i] = gen_params.alpha - (float) i * incr;
+		//printf("vc_lut[%d] = %f\n", i, vc_lut[i]);
+	}
+
+}
+
+int get_vc(int vc) {
+	int ret = (int) (((float) vc / 65535.0f) * 64.0f);
+	//printf("vc=%f vcd=%d\n", (float) vc, ret);
+	return ret;
+}
+
+static int heat_map[64][64];
+
 /**
  * Not a brain fart: this emulates the VC4 word length (16bit) used for vmul operations.
  * The returned 16bit sample is shifted to be MSB-justified in 32-bit space.
@@ -147,19 +202,25 @@ uint16_t get_vo(uint16_t duty, uint16_t vc)
 uint32_t sdm_a_sample(int32_t *sample)
 {
 	uint16_t y;
+	unsigned int vc = 0;
 	*sample += (1<<31);
 
 	//y = (*sample >> 16) + ((*sample & 0x00008000) >> 15);
 	y = (*sample >> 16);
 	y += 2 * sdm_state.integrate1;
 	y -= sdm_state.integrate2;
-
+	//y += sdm_state.integrate1;
+	/*
 	if (gen_params.dither == 1)
 		dither1(&y, gen_params.nbits);
 	else if (gen_params.dither == 2)
 		dither2(&y, gen_params.nbits);
 	else if (gen_params.dither == 3)
 		dither3(&y, gen_params.nbits);
+	else if (gen_params.dither == 4)
+		dither4(&y, gen_params.dither);
+	*/
+	dither4(&y, gen_params.dither);
 
 	/* store last_vo */
 	if (gen_params.use_estimator) {
@@ -168,8 +229,12 @@ uint32_t sdm_a_sample(int32_t *sample)
 		int16_t error = y;
 		quantise(&y, gen_params.nbits);
 		vo = get_vo(y, sdm_state.vc_estimate);
-		val = (gen_params.alpha * (float) vo) + ((1.0f - gen_params.alpha) * (float) sdm_state.vc_estimate);
+		vc = get_vc(sdm_state.vc_estimate);
+		val = (vc_lut[vc] * (float) vo) + ((1.0f - vc_lut[vc]) * (float) sdm_state.vc_estimate);
 		sdm_state.vc_estimate = (uint16_t) val;
+		//printf("vc_estimate = %d\n", sdm_state.vc_estimate);
+		//printf("vo = %d vc = %d\n", y >> 10, vc);
+		heat_map[y >> 10][vc] += 1;
 		error =  error - vo;
 		sdm_state.integrate2 = sdm_state.integrate1;
 		sdm_state.integrate1 = error;
@@ -232,7 +297,8 @@ void oversample_and_fir (int *input, int32_t *output, int src_length, int nr_cha
 {
 	int i, j, k;
 	float accumulator = 0.0f;
-	int sample;
+	int sample, derp = 0;
+	int offset;
 	float last_sample[FILTER_LEN];
 
 	for (i = 0; i < FILTER_LEN; i++) {
@@ -240,15 +306,18 @@ void oversample_and_fir (int *input, int32_t *output, int src_length, int nr_cha
 	}
 	for (i = 0; i < src_length; i+= nr_channels) {
 		for (j = 0; j < gen_params.osr; j++) {
+			derp = 0;
+			offset = i * gen_params.osr + j;
 			if(j == 0)
 				sample = input[i];
 			else
 				sample = 0;
 			/* Compute FIR output sample given input */
-			last_sample[(i * gen_params.osr + j) % FILTER_LEN] = (float) sample / 2147483647.0f;
+			last_sample[offset % FILTER_LEN] = (float) sample / 2147483647.0f;
 			accumulator = 0.0f;
-			for (k = 0; k < FILTER_LEN; k++) {
-				int in_ptr = ((i * gen_params.osr + j - k) % FILTER_LEN);
+			for (k = j; k < FILTER_LEN; k+= gen_params.osr) {
+				derp++;
+				int in_ptr = ((offset - k) % FILTER_LEN);
 				if (in_ptr >= 0) {
 					accumulator += last_sample[in_ptr] * ((float) coefs[k] / 32767.0f);
 				} else {
@@ -308,7 +377,7 @@ int main (int argc, char **argv)
 	FILE *outfile = NULL;
 
 	int output_buf_len;
-	int i = 0;
+	int i = 0, j;
 
 	sf_count_t read;
 
@@ -319,15 +388,17 @@ int main (int argc, char **argv)
 	gen_params.nbits = 6;
 	gen_params.order = 2;
 	gen_params.osr = 32;
-	gen_params.dither = 3;
+	gen_params.dither = 4;
 	gen_params.filtermode = "matlab5";
 	gen_params.use_estimator = 0;
 	gen_params.alpha = 0.0737f;
+	gen_params.fudge = 0.01;
 	gen_params.inputfile = "in.wav";
 
 	SF_INFO snd_info = {
 		.format = 0,
 	};
+	init_vc();
 
 	infile = sf_open(gen_params.inputfile, SFM_READ, &snd_info);
 
@@ -378,6 +449,12 @@ int main (int argc, char **argv)
 
 	} while (read != 0);
 	printf("am i dead yet?\n");
+	for (i = 0; i < 64; i++) {
+		printf("\n");
+		for (j = 0; j < 64; j++) {
+			printf("%06d, ", heat_map[i][j]);
+		}
+	}
 	fflush(stdout);
 	fclose(outfile);
 bail:
