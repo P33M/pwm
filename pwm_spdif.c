@@ -102,6 +102,7 @@ inline void bmc_enc(uint32_t in, uint32_t *out) {
 	}
 	tmp = __builtin_bswap32(tmp);
 	*out = tmp;
+	//printf("enc1 = 0x%08x\n", *out);
 	out++;
 	tmp = 0;
 	for (i = 31; i > 0; i -= 2) {
@@ -118,6 +119,7 @@ inline void bmc_enc(uint32_t in, uint32_t *out) {
 	/* __cpu_to_be32() maybe */
 	tmp = __builtin_bswap32(tmp);
 	*out = tmp;
+	//printf("enc2 = 0x%08x\n", *out);
 }
 
 /* Sets the last bit of a SPDIF subframe depending on odd parity */
@@ -151,19 +153,19 @@ void spdif_format(uint16_t *in, uint32_t *out, int nchannels) {
 	for (i = 0; i < nchannels; i++) {
 		if (i == 0) {
 			if (framepos == 0) {
-				if (enc_state.biphase)
+				if (!enc_state.biphase)
 					enc_state.next_preamble = B;
 				else
 					enc_state.next_preamble = nB;
 			} else {
-				if (enc_state.biphase)
+				if (!enc_state.biphase)
 					enc_state.next_preamble = M;
 				else
 					enc_state.next_preamble = nM;
 			}
 
 		} else {
-			 if (enc_state.biphase)
+			 if (!enc_state.biphase)
 				 enc_state.next_preamble = W;
 			 else
 				 enc_state.next_preamble = nW;
@@ -171,10 +173,13 @@ void spdif_format(uint16_t *in, uint32_t *out, int nchannels) {
 		/* Arrrgh this is terrible. The SPDIF data is transmitted *LSB* first
 		 * and right-aligned. Who the hell thought that this was a good idea?
 		 */
-		tmp = *in << 16;
-		tmp = bitrev32(tmp);
-		rev = (uint16_t) (tmp >> 16);
+		//rev = __builtin_bswap16(*in);
+		//printf("in = 0x%08x, rev = 0x%08x\n", *in, rev);
+		tmp = bitrev32((uint32_t) *in);
+		//printf("tmp = 0x%08x\n", tmp);
+		tmp >>= 12;
 		set_word_parity(&tmp);
+		//printf("tmpout = 0x%08x\n", tmp);
 		bmc_enc(tmp, out);
 	}
 	framepos++;
@@ -186,27 +191,6 @@ void spdif_format(uint16_t *in, uint32_t *out, int nchannels) {
 
 #define BE4(x) ((x)>>24)&0xff,((x)>>16)&0xff,((x)>>8)&0xff,((x)>>0)&0xff
 
-//int main (void) {
-//	uint32_t word;
-//	uint32_t output[2];
-//	enc_state.next_preamble = B;
-//	enc_state.biphase = 0;
-//	word = 0xF0F01010;
-//	set_word_parity(&word);
-//	bmc_enc(word, &output[0]);
-//	printf("word = 0x%08x, %02x%02x%02x%02x%02x%02x%02x%02x, \n",
-//			word, BE4(output[0]), BE4(output[1]));
-//	printf("out = 0x%08x, 0x%08x\n", output[0], output[1]);
-//	enc_state.next_preamble = (output[1] & 0x1) ? nW : W;
-//	bmc_enc(word, &output[0]);
-//	printf("word = 0x%08x, %02x%02x%02x%02x%02x%02x%02x%02x, \n",
-//			word, BE4(output[0]), BE4(output[1]));
-//
-//	/* Open infile */
-//	/* Open outfile */
-//	/* While infile_samples, convert and write to outfile */
-//	return 0;
-//}
 #define CHUNK_SIZE 1024
 
 int main (int argc, char **argv) {
@@ -216,11 +200,10 @@ int main (int argc, char **argv) {
 			.format = 0,
 	};
 	sf_count_t read;
-	int i, frame_index = 0;
+	int i;
 	opterr = 0;
-	short *input_buf = NULL;
-	uint32_t *output_buf = NULL;
-	uint32_t *subframe = NULL;
+	short *input_buf = NULL, *inptr = NULL;
+	uint32_t *output_buf = NULL, *outptr = NULL;
 	encoder_params.nbits = 16;
 
 	while ((i = getopt(argc, argv, "i:o:n:")) != -1) {
@@ -237,7 +220,10 @@ int main (int argc, char **argv) {
 	}
 	uint32_t derp = 0x12345678;
 	printf("derp = 0x%08x 0x%08x\n", derp, bitrev32(derp));
-
+	if(!encoder_params.inputfile) {
+		printf("Invalid input file name\n");
+		goto bail;
+	}
 	infile = sf_open(encoder_params.inputfile, SFM_READ, &snd_info);
 	/* What did we get? */
 	if (infile) {
@@ -262,21 +248,24 @@ int main (int argc, char **argv) {
 	}
 	input_buf = malloc(CHUNK_SIZE * sizeof(short) * encoder_params.nchannels);
 	output_buf = malloc(CHUNK_SIZE * 2 * sizeof(uint32_t) * encoder_params.nchannels);
-	subframe = malloc(sizeof(uint32_t) * encoder_params.nchannels);
-	if (!input_buf || !output_buf || !subframe) {
+	if (!input_buf || !output_buf) {
 		printf("Malloc died\n");
 		goto bail;
 	}
-
 	do {
-		read = sf_readf_short(infile, input_buf, CHUNK_SIZE);
+		inptr = input_buf;
+		outptr = output_buf;
+		read = sf_readf_short(infile, inptr, CHUNK_SIZE);
 		/* I read N frames */
+		printf("read = %d\n", (int)read);
 		for (i = 0; i < read; i++) {
-			spdif_format(input_buf, output_buf, encoder_params.nchannels);
-			input_buf += encoder_params.nchannels;
-			output_buf += encoder_params.nchannels * 2;
+			spdif_format((uint16_t *)inptr, outptr, encoder_params.nchannels);
+			inptr += encoder_params.nchannels;
+			outptr += encoder_params.nchannels * 2;
+			//printf("i = %d, in = %d, out = 0x%08x\n", i, *inptr, *outptr);
 		}
 		fwrite(output_buf, sizeof(uint32_t), 2 * encoder_params.nchannels * read, outfile);
+		fflush(outfile);
 	} while (read != 0);
 bail:
 	return 0;
