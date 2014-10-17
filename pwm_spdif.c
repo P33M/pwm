@@ -181,6 +181,8 @@ void spdif_format(uint16_t *in, uint32_t *out, int nchannels) {
 		set_word_parity(&tmp);
 		//printf("tmpout = 0x%08x\n", tmp);
 		bmc_enc(tmp, out);
+		in++;
+		out+=2;
 	}
 	framepos++;
 	if (framepos >= 192) {

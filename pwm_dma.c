@@ -338,12 +338,14 @@ static int __init pwm_dma_init(void)
 	writel(reg, state->pwm_base + DAT1);
 	/* Channel 1 only, range=64, M/S mode, DMA enable */
 	reg = (1 << 0) | /* CH1EN */
-		//	(1 << 1)
-			(1 << 2) | 
-			//(1 << 3) |
-			(1 << 5) |
-			(1 << 6) | /* M/S */
-			(1 << 7);
+			(1 << 1) | /* serialiser */
+			(1 << 2) | /* Repeat last bit */
+			//(1 << 3) | /* Silence bit */
+			//(1 << 4) | /* invert */
+			//(1 << 5) | /* Use fifo */
+			//(1 << 6) | /* clearfifo */
+			//(1 << 7); /* Mark-space mode */
+			(0 << 8);
 	writel(reg, state->pwm_base + CTL);
 	reg =	(1 << 31) |
 			(4 << 8) |
@@ -360,7 +362,7 @@ static int __init pwm_dma_init(void)
 	}
 	pr_info("set initial values\n");
 	/* Hack - disable dma channel 3 because VC has this running */
-	writel(0, ext_dmaman->dma_base + (3 << 8));
+	//writel(0, ext_dmaman->dma_base + (3 << 8));
 	pr_warn("hack: disabling channel 0x%08x\n", ext_dmaman->dma_base + (3 << 8));
 	writel((1<<31), state->dma_chan_base + BCM2708_DMA_ADDR);
 	writel(state->scb_handle, state->dma_chan_base + BCM2708_DMA_ADDR);
